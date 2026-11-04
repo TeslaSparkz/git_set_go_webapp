@@ -1,12 +1,33 @@
-
 const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
+
+try {
+  for (const line of fs.readFileSync(path.join(__dirname, ".env"), "utf8").split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*$/);
+    if (m && !line.trim().startsWith("#") && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
+  }
+} catch {}
 const PORT = process.env.PORT || 3000, GH_TOKEN = process.env.GITHUB_TOKEN;
-const DB_FILE = path.join(__dirname, "data.json");
+const R_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, ""), R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+if (!R_URL || !R_TOKEN) { console.error("Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN."); process.exit(1); }
 
-let db = { players: {}, claims: {} };       
-try { db = JSON.parse(fs.readFileSync(DB_FILE, "utf8")); } catch {}
-const save = () => { fs.writeFileSync(DB_FILE + ".tmp", JSON.stringify(db)); fs.renameSync(DB_FILE + ".tmp", DB_FILE); };
-
+async function call(url, body) {
+  let r, j;
+  try {
+    r = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + R_TOKEN }, body: JSON.stringify(body) });
+    j = await r.json();
+  } catch { throw Object.assign(new Error("Database unavailable. Try again."), { status: 503 }); }
+  if (!r.ok) throw Object.assign(new Error("Database error."), { status: 503 });
+  return j;
+}
+async function redis(...cmd) {
+  const j = await call(R_URL, cmd.map(String));
+  if (j.error) throw Object.assign(new Error("Database error."), { status: 503 });
+  return j.result;
+}
+async function pipe(cmds) {
+  const j = await call(R_URL + "/pipeline", cmds.map(c => c.map(String)));
+  return j.map(x => { if (x.error) throw Object.assign(new Error("Database error."), { status: 503 }); return x.result; });
+}
 
 async function gh(p) {
   const r = await fetch("https://api.github.com" + p, {
@@ -37,7 +58,6 @@ async function inspect(owner, name, handle) {
   ]);
   return { info, prs, merged, issues, commits, branches, runs, mine };
 }
-
 function grade(d, handle) {
   const must = [
     [true, "Repository exists  +10", (d.info.fork ? "public · fork" : "public") + " · ★" + d.info.stargazers_count],
@@ -57,10 +77,12 @@ function grade(d, handle) {
   return { must, extra, pass, points };
 }
 
-/* ---------- helpers ---------- */
-const total = id => Object.values(db.claims).filter(c => c.playerId === id).reduce((a, c) => a + c.points, 0);
-const repoCount = id => Object.values(db.claims).filter(c => c.playerId === id).length;
-const auth = req => { const t = (req.headers.authorization || "").replace("Bearer ", ""); return Object.values(db.players).find(p => p.token === t); };
+async function auth(req) {
+  const t = (req.headers.authorization || "").replace("Bearer ", "");
+  if (!/^[a-f0-9]{48}$/.test(t)) return null;
+  const v = await redis("GET", "token:" + t);
+  return v ? JSON.parse(v) : null;
+}
 const send = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
 const readBody = req => new Promise((ok, no) => {
   let s = ""; req.on("data", c => { s += c; if (s.length > 4096) { req.destroy(); no(new Error("Too large")); } });
@@ -79,14 +101,19 @@ function serveStatic(res, url) {
   fs.createReadStream(f).pipe(res);
 }
 
-
 http.createServer(async (req, res) => {
   try {
     const url = req.url.split("?")[0];
     if (req.method === "GET" && !url.startsWith("/api/")) return serveStatic(res, url);
+
     if (req.method === "GET" && url === "/api/leaderboard") {
-      const rows = Object.values(db.players).map(p => ({ name: p.name, points: total(p.id), repos: repoCount(p.id), t: p.created }))
-        .sort((a, b) => b.points - a.points || a.t - b.t).map(({ t, ...r }, i) => ({ rank: i + 1, ...r }));
+      const flat = await redis("ZRANGE", "lb", 0, -1, "REV", "WITHSCORES");   // [id, score, id, score, ...]
+      const ids = [], pts = {};
+      for (let i = 0; i < flat.length; i += 2) { ids.push(flat[i]); pts[flat[i]] = +flat[i + 1]; }
+      if (!ids.length) return send(res, 200, []);
+      const out = await pipe([["MGET", ...ids.map(i => "player:" + i)], ...ids.map(i => ["HGET", "stats:" + i, "repos"])]);
+      const rows = ids.map((id, i) => { const p = JSON.parse(out[0][i] || "{}"); return { name: p.name, points: pts[id], repos: +out[i + 1] || 0, t: p.created || 0 }; })
+        .filter(r => r.name).sort((a, b) => b.points - a.points || a.t - b.t).map(({ t, ...r }, i) => ({ rank: i + 1, ...r }));
       return send(res, 200, rows);
     }
     if (req.method === "POST" && url === "/api/register") {
@@ -94,31 +121,37 @@ http.createServer(async (req, res) => {
       const n = String(name).trim().replace(/\s+/g, " "), g = String(github).trim().replace(/^@/, "");
       if (n.length < 2 || n.length > 30) return send(res, 400, { error: "Name must be 2 to 30 characters." });
       if (g && !/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "That GitHub username looks invalid." });
-      if (Object.values(db.players).some(p => p.name.toLowerCase() === n.toLowerCase())) return send(res, 409, { error: "That name is taken. Pick another." });
       const id = crypto.randomUUID(), token = crypto.randomBytes(24).toString("hex");
-      db.players[id] = { id, name: n, github: g, token, created: Date.now() }; save();
+      if (!(await redis("SET", "name:" + n.toLowerCase(), id, "NX"))) return send(res, 409, { error: "That name is taken. Pick another." });
+      const p = JSON.stringify({ id, name: n, github: g, created: Date.now() });
+      await pipe([["SET", "token:" + token, p], ["SET", "player:" + id, p], ["ZADD", "lb", "NX", 0, id]]);
       return send(res, 201, { token, name: n, github: g, points: 0, repos: 0 });
     }
-    const me = auth(req);
+    const me = url.startsWith("/api/") ? await auth(req) : null;
     if (url.startsWith("/api/") && !me) return send(res, 401, { error: "Register first." });
-    if (req.method === "GET" && url === "/api/me") return send(res, 200, { name: me.name, github: me.github, points: total(me.id), repos: repoCount(me.id) });
+    if (req.method === "GET" && url === "/api/me") {
+      const [pts, repos] = await pipe([["ZSCORE", "lb", me.id], ["HGET", "stats:" + me.id, "repos"]]);
+      return send(res, 200, { name: me.name, github: me.github, points: +pts || 0, repos: +repos || 0 });
+    }
     if (req.method === "POST" && url === "/api/verify") {
       const m = String((await readBody(req)).repo || "").trim().replace(/\.git$/i, "").replace(/\/+$/, "")
-        .match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i) || null;
+        .match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i);
       if (!m) return send(res, 400, { error: "Paste a link like github.com/owner/repo." });
       if (Date.now() - (cooldown[me.id] || 0) < 8000) return send(res, 429, { error: "Slow down. Wait a few seconds between checks." });
       cooldown[me.id] = Date.now();
-      const [, owner, name] = m, key = (owner + "/" + name).toLowerCase();
-      const claim = db.claims[key];
+      const [, owner, name] = m, key = "claim:" + (owner + "/" + name).toLowerCase();
+      const raw = await redis("GET", key), claim = raw ? JSON.parse(raw) : null;
       if (claim && claim.playerId !== me.id) return send(res, 409, { error: "That repo is already registered to another participant." });
       const d = await inspect(owner, name, me.github);
       if (!d) return send(res, 404, { error: "Repo not found. Check the link and make sure it is public." });
-      const g = grade(d, me.github);
-      let awarded = 0;
-      awarded = Math.max(0, g.points - (claim ? claim.points : 0));
-      db.claims[key] = { playerId: me.id, points: Math.max(g.points, claim ? claim.points : 0), at: Date.now() };
-      if (!claim || awarded) save();
-      return send(res, 200, { ...g, awarded, repo: owner + "/" + name, total: total(me.id) });
+      const g = grade(d, me.github), prev = claim ? claim.points : 0, awarded = Math.max(0, g.points - prev);
+      const rec = JSON.stringify({ playerId: me.id, points: Math.max(g.points, prev), at: Date.now() });
+      if (!claim) {
+        if (!(await redis("SET", key, rec, "NX"))) return send(res, 409, { error: "That repo is already registered to another participant." });
+        await redis("HINCRBY", "stats:" + me.id, "repos", 1);
+      } else if (awarded) await redis("SET", key, rec);
+      const total = awarded ? +(await redis("ZINCRBY", "lb", awarded, me.id)) : +(await redis("ZSCORE", "lb", me.id)) || 0;
+      return send(res, 200, { ...g, awarded, repo: owner + "/" + name, total });
     }
     send(res, 404, { error: "Not found" });
   } catch (e) { send(res, e.status || 400, { error: e.message || "Something went wrong." }); }
