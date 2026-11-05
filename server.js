@@ -8,9 +8,9 @@ try {
 } catch {}
 const PORT = process.env.PORT || 3000, GH_TOKEN = process.env.GITHUB_TOKEN;
 const R_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, ""), R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
-if (!R_URL || !R_TOKEN) { console.error("Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN."); process.exit(1); }
 
 async function call(url, body) {
+  if (!R_URL || !R_TOKEN) throw Object.assign(new Error("Server is missing Upstash Redis configuration."), { status: 503 });
   let r, j;
   try {
     r = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + R_TOKEN }, body: JSON.stringify(body) });
@@ -144,14 +144,21 @@ async function auth(req) {
   return profile;
 }
 const send = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
-const readBody = req => new Promise((ok, no) => {
+const readBody = req => {
+  if (req.body !== undefined) {
+    if (typeof req.body === "string") {
+      try { return Promise.resolve(JSON.parse(req.body || "{}")); }
+      catch { return Promise.reject(Object.assign(new Error("Bad JSON"), { status: 400 })); }
+    }
+    return Promise.resolve(req.body || {});
+  }
+  return new Promise((ok, no) => {
   let s = ""; req.on("data", c => { s += c; if (s.length > 4096) { req.destroy(); no(new Error("Too large")); } });
   req.on("end", () => { try { ok(JSON.parse(s || "{}")); } catch { no(new Error("Bad JSON")); } });
-});
-const cooldown = {};
-
+  });
+};
 const DIST = path.join(__dirname, "dist");
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json", ".pdf": "application/pdf" };
 function serveStatic(res, url) {
   let f = path.join(DIST, decodeURIComponent(url));
   if (!f.startsWith(DIST)) { res.writeHead(403); return res.end(); }
@@ -161,7 +168,7 @@ function serveStatic(res, url) {
   fs.createReadStream(f).pipe(res);
 }
 
-http.createServer(async (req, res) => {
+async function handle(req, res) {
   try {
     const url = req.url.split("?")[0];
     if (req.method === "GET" && !url.startsWith("/api/")) return serveStatic(res, url);
@@ -218,8 +225,8 @@ http.createServer(async (req, res) => {
       const m = String((await readBody(req)).repo || "").trim().replace(/\.git$/i, "").replace(/\/+$/, "")
         .match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i);
       if (!m) return send(res, 400, { error: "Paste a link like github.com/owner/repo." });
-      if (Date.now() - (cooldown[me.id] || 0) < 8000) return send(res, 429, { error: "Slow down. Wait a few seconds between checks." });
-      cooldown[me.id] = Date.now();
+      if (!(await redis("SET", "cooldown:" + me.id, "1", "NX", "EX", 8)))
+        return send(res, 429, { error: "Slow down. Wait a few seconds between checks." });
       const [, owner, name] = m, key = "claim:" + (owner + "/" + name).toLowerCase();
       const raw = await redis("GET", key), claim = raw ? JSON.parse(raw) : null;
       if (claim && claim.playerId !== me.id) return send(res, 409, { error: "That repo is already registered to another participant." });
@@ -247,4 +254,14 @@ http.createServer(async (req, res) => {
     }
     send(res, 404, { error: "Not found" });
   } catch (e) { send(res, e.status || 400, { error: e.message || "Something went wrong." }); }
-}).listen(PORT, () => console.log("Git, Set, Go! running on http://localhost:" + PORT));
+}
+
+module.exports = handle;
+
+if (require.main === module) {
+  if (!R_URL || !R_TOKEN) {
+    console.error("Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN.");
+    process.exit(1);
+  }
+  http.createServer(handle).listen(PORT, () => console.log("Git, Set, Go! running on http://localhost:" + PORT));
+}
