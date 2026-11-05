@@ -245,11 +245,30 @@ async function handle(req, res) {
       const delta = g.points - prev;
       const awarded = delta > 0 ? Math.min(delta, MAX_POINTS - current) : 0;
       const total = Math.min(MAX_POINTS, current + awarded);
-      const rec = JSON.stringify({ playerId: me.id, points: g.points, awardedPoints: priorAwarded + awarded, version: SCORE_VERSION, at: Date.now() });
+      const at = Date.now();
+      const rec = JSON.stringify({
+        playerId: me.id,
+        points: Math.max(prev, g.points),
+        awardedPoints: priorAwarded + awarded,
+        objectives: {
+          repository: true,
+          pullRequests: d.prs,
+          mergedPullRequests: d.merged,
+          commits: d.commits,
+          issues: d.issues,
+          branches: d.branches,
+          actionsRuns: d.runs,
+          authoredPullRequests: d.mine
+        },
+        version: SCORE_VERSION,
+        at
+      });
       if (!claim) {
         if (!(await redis("SET", key, rec, "NX"))) return send(res, 409, { error: "That repo is already registered to another participant." });
         await redis("HINCRBY", "stats:" + me.id, "repos", 1);
-      } else if (claim.version !== SCORE_VERSION || awarded) await redis("SET", key, rec);
+      } else {
+        await redis("SET", key, rec);
+      }
       await redis("ZADD", "lb", total, me.id);
       if (awarded > 0) {
         const scoreAt = Date.now();

@@ -19,4 +19,4 @@
 5. Add the Redis variables to each environment you use (Production, Preview, and Development), then redeploy.
 6. Open the deployed site, register with a GitHub username, verify a repository, and check the Leaderboard tab. The API and frontend use the same origin; no separate API URL or CORS configuration is needed.
 
-The leaderboard stores participants, repo claims, scores, and registration tokens in Upstash Redis. Use a separate Redis database for development and production if you want to keep their data isolated.
+The leaderboard stores participants, repo claims, scores, and registration tokens in Upstash Redis. Each repo claim is a JSON value that is created on first verification and refreshed with the latest objective measurements (PRs, merged PRs, commits, issues, branches, Actions runs, and authored PRs) on later checks. Its recorded points are a high-water mark, so a later check cannot remove points already earned. Use a separate Redis database for development and production if you want to keep their data isolated.
