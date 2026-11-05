@@ -13,20 +13,40 @@ async function call(url, body) {
   if (!R_URL || !R_TOKEN) throw Object.assign(new Error("Server is missing Upstash Redis configuration."), { status: 503 });
   let r, j;
   try {
-    r = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + R_TOKEN }, body: JSON.stringify(body) });
-    j = await r.json();
-  } catch { throw Object.assign(new Error("Database unavailable. Try again."), { status: 503 }); }
-  if (!r.ok) throw Object.assign(new Error("Database error."), { status: 503 });
+    r = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + R_TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  } catch {
+    throw Object.assign(new Error("Could not reach Upstash Redis. Check its REST URL and network access."), { status: 503 });
+  }
+  if (!r.ok) {
+    const message = r.status === 401 || r.status === 403
+      ? "Upstash rejected the REST token. Check UPSTASH_REDIS_REST_TOKEN."
+      : r.status === 404
+        ? "Upstash REST endpoint not found. Check UPSTASH_REDIS_REST_URL."
+        : `Upstash REST request failed (HTTP ${r.status}). Check the database configuration and status.`;
+    console.error(`Upstash REST request failed with HTTP ${r.status}.`);
+    throw Object.assign(new Error(message), { status: 503 });
+  }
+  try { j = await r.json(); }
+  catch { throw Object.assign(new Error("Upstash returned an invalid response. Check UPSTASH_REDIS_REST_URL."), { status: 503 }); }
   return j;
+}
+function commandError(detail) {
+  console.error("Upstash Redis command failed:", detail);
+  return Object.assign(new Error("Upstash Redis rejected a command. Check the server logs for details."), { status: 503 });
 }
 async function redis(...cmd) {
   const j = await call(R_URL, cmd.map(String));
-  if (j.error) throw Object.assign(new Error("Database error."), { status: 503 });
+  if (j.error) throw commandError(j.error);
   return j.result;
 }
 async function pipe(cmds) {
   const j = await call(R_URL + "/pipeline", cmds.map(c => c.map(String)));
-  return j.map(x => { if (x.error) throw Object.assign(new Error("Database error."), { status: 503 }); return x.result; });
+  if (!Array.isArray(j)) throw Object.assign(new Error("Upstash returned an invalid pipeline response."), { status: 503 });
+  return j.map(x => { if (x.error) throw commandError(x.error); return x.result; });
 }
 
 async function gh(p) {
