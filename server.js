@@ -1,5 +1,7 @@
+// Git, Set, Go! backend. Node 18+, no dependencies. Data lives in Upstash Redis (REST API).
+// Required env: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN. Optional: GITHUB_TOKEN, PORT.
 const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
-
+// Load .env from this folder if present (real environment variables, e.g. on Render, take priority).
 try {
   for (const line of fs.readFileSync(path.join(__dirname, ".env"), "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*$/);
@@ -10,6 +12,9 @@ const PORT = process.env.PORT || 3000, GH_TOKEN = process.env.GITHUB_TOKEN;
 const R_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, ""), R_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 if (!R_URL || !R_TOKEN) { console.error("Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN."); process.exit(1); }
 
+/* ---------- Upstash Redis (REST) ----------
+   Keys: token:<t> -> player JSON | player:<id> -> player JSON | name:<lowercase> -> id (unique names)
+         claim:<owner/repo> -> {playerId, points} | stats:<id> hash {repos} | lb sorted set (id -> points) */
 async function call(url, body) {
   let r, j;
   try {
@@ -29,6 +34,7 @@ async function pipe(cmds) {
   return j.map(x => { if (x.error) throw Object.assign(new Error("Database error."), { status: 503 }); return x.result; });
 }
 
+/* ---------- GitHub ---------- */
 async function gh(p) {
   const r = await fetch("https://api.github.com" + p, {
     headers: { Accept: "application/vnd.github+json", "User-Agent": "git-set-go", ...(GH_TOKEN ? { Authorization: "Bearer " + GH_TOKEN } : {}) }
@@ -58,6 +64,9 @@ async function inspect(owner, name, handle) {
   ]);
   return { info, prs, merged, issues, commits, branches, runs, mine };
 }
+
+// 10 points if the repo exists, 20 for pull requests, 30 for a merged PR (60 total).
+// Once all three are met, up to +50 in bonuses.
 function grade(d, handle) {
   const must = [
     [true, "Repository exists  +10", (d.info.fork ? "public · fork" : "public") + " · ★" + d.info.stargazers_count],
@@ -77,6 +86,7 @@ function grade(d, handle) {
   return { must, extra, pass, points };
 }
 
+/* ---------- helpers ---------- */
 async function auth(req) {
   const t = (req.headers.authorization || "").replace("Bearer ", "");
   if (!/^[a-f0-9]{48}$/.test(t)) return null;
@@ -90,8 +100,9 @@ const readBody = req => new Promise((ok, no) => {
 });
 const cooldown = {};
 
+/* ---------- static files (the built Solid app in ./dist) ---------- */
 const DIST = path.join(__dirname, "dist");
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".ico": "image/x-icon", ".json": "application/json", ".pdf": "application/pdf" };
 function serveStatic(res, url) {
   let f = path.join(DIST, decodeURIComponent(url));
   if (!f.startsWith(DIST)) { res.writeHead(403); return res.end(); }
@@ -101,6 +112,7 @@ function serveStatic(res, url) {
   fs.createReadStream(f).pipe(res);
 }
 
+/* ---------- routes ---------- */
 http.createServer(async (req, res) => {
   try {
     const url = req.url.split("?")[0];
