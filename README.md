@@ -3,9 +3,9 @@
 ## Run locally
 
 1. Copy `.env.example` to `.env`.
-2. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` using the Upstash instructions below.
+2. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` using the Upstash instructions below. The registration screen checks the Redis connection before enabling registration.
 3. Optionally set `GITHUB_TOKEN` to a GitHub personal access token to increase GitHub API rate limits.
-4. Run `npm install`, then `npm run dev` for the frontend and `npm start` for the API.
+4. Run `npm install`. Start `npm start` in one terminal for the API, then run `npm run dev` in a second terminal for the frontend. The Vite proxy forwards `/api` requests to the API on port 3000.
 
 ## Deploy to Vercel with Upstash Redis
 

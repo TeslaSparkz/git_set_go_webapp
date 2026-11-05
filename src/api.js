@@ -13,7 +13,10 @@ export async function api(path, body) {
     body: body && JSON.stringify(body)
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(j.error || "Request failed"), { status: r.status });
+  if (!r.ok) {
+    const error = j.error || (r.status === 404 ? "API route not found. Check the Vercel API function deployment or local API server." : "Request failed");
+    throw Object.assign(new Error(error), { status: r.status });
+  }
   return j;
 }
 

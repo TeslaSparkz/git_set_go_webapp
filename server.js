@@ -173,6 +173,11 @@ async function handle(req, res) {
     const url = req.url.split("?")[0];
     if (req.method === "GET" && !url.startsWith("/api/")) return serveStatic(res, url);
 
+    if (req.method === "GET" && url === "/api/health") {
+      await redis("PING");
+      return send(res, 200, { ok: true, redis: true });
+    }
+
     if (req.method === "GET" && url === "/api/leaderboard") {
       const flat = await redis("ZRANGE", "lb", 0, -1, "REV", "WITHSCORES");   // [id, score, id, score, ...]
       const ids = [], pts = {};
