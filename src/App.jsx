@@ -3,6 +3,7 @@ import { me, refreshMe } from "./api";
 import Register from "./Register";
 import Verify from "./Verify";
 import Leaderboard from "./Leaderboard";
+import CheatSheet from "./CheatSheet";
 
 function Graph() {
   return (
@@ -22,12 +23,12 @@ function Orgs() {
   return (
     <section class="orgs">
       <div class="org">
-        <div class="logo"><span><img src="/gdg-logo.svg" alt="Google Developer Groups logo" /></span></div>
+        <div class="logo"><span>GDG logo</span></div>
         <div>Google Developer Groups<small>On Campus · Indian Institute of Information Technology Kalyani</small></div>
       </div>
       <div class="org r">
         <div><b>FOSS Club</b><br />IIIT, কল্যাণী</div>
-        <div class="logo"><img src="/foss-icon.svg" alt="FOSS Club logo" /></div>
+        <div class="logo"><span>FOSS logo</span></div>
       </div>
     </section>
   );
@@ -53,12 +54,14 @@ export default function App() {
           <div class="tabs" role="tablist">
             <button role="tab" aria-selected={tab() === "play"} onClick={() => setTab("play")}>Verify</button>
             <button role="tab" aria-selected={tab() === "lb"} onClick={() => setTab("lb")}>Leaderboard</button>
+            <button role="tab" aria-selected={tab() === "sheet"} onClick={() => setTab("sheet")}>Cheat sheet</button>
           </div>
 
           <div hidden={tab() !== "play"}>
             <Show when={me()} fallback={<Register />}><Verify /></Show>
           </div>
           <Show when={tab() === "lb"}><Leaderboard /></Show>
+          <Show when={tab() === "sheet"}><CheatSheet /></Show>
 
           <p class="foot">$ git push origin main --be-there</p>
         </div>
