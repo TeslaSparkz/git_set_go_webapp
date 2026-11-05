@@ -23,12 +23,12 @@ function Orgs() {
   return (
     <section class="orgs">
       <div class="org">
-        <div class="logo"><span>GDG logo</span></div>
+        <img src="/gdg-logo.svg" alt="Google Developer Groups logo" class="logo" />
         <div>Google Developer Groups<small>On Campus · Indian Institute of Information Technology Kalyani</small></div>
       </div>
       <div class="org r">
         <div><b>FOSS Club</b><br />IIIT, কল্যাণী</div>
-        <div class="logo"><span>FOSS logo</span></div>
+        <div class="logo"><img src="/foss-icon.svg" alt="FOSS Club logo" class ="logo" /></div>
       </div>
     </section>
   );
