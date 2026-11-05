@@ -50,7 +50,7 @@ export default function Verify() {
                    ? `${r.repo} checked. Your GitHub username has reached the 110-point cap.`
                    : "Already counted. Add bonuses to score more." });
       } else {
-        const missing = r.must.filter(m => !m[0]).map(m => m[1].replace(/\s+\+\d+(?: each)?$/, "").toLowerCase()).join(" and ");
+        const missing = r.must.filter(m => !m[0]).map(m => m[1].replace(/\s+\+\d+(?: each| points)?$/, "").toLowerCase()).join(" and ");
         setV({ cls: "fail", head: r.awarded ? `Partial · ${r.awarded > 0 ? "+" : ""}${r.awarded} points` : "Not yet",
                sub: `Still needs ${missing}. You have ${r.total} points. Fix it, then verify again.` });
       }
@@ -78,10 +78,10 @@ export default function Verify() {
       </Show>
       <form onSubmit={submit}>
         <div class="row"><label for="repo">$</label>
-          <input id="repo" placeholder="github.com/owner/repo" autocomplete="off" spellcheck={false} required value={repo()} onInput={e => setRepo(e.target.value)} /></div>
+          <input id="repo" placeholder="github.com/you/repo or you/repo" autocomplete="off" spellcheck={false} required value={repo()} onInput={e => setRepo(e.target.value)} /></div>
         <button type="submit" disabled={busy()}>git verify --repo</button>
       </form>
-      <p class="hint">Per repo: +10 for the repo, +20 per commit, +40 per PR, +10 per merged PR, and +30 per issue. Authored PRs, Actions, and extra branches can add bonuses. The total is capped at 110 points per GitHub username across all repos.</p>
+      <p class="hint">Verify only repositories owned by your linked GitHub username. Per repo: +10 for the repo, +20 for commits, +40 for pull requests, +10 for merged PRs, and +30 for issues. Each objective awards points once, regardless of its count. Authored PRs, Actions, and extra branches can add bonuses. Your score is the highest-scoring repo, capped at 110 points.</p>
 
       <div id="out" aria-live="polite">
         <Show when={v()}>

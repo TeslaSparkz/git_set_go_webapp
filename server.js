@@ -64,7 +64,7 @@ async function count(p) {
   return m ? +m[1] : (await r.json()).length;
 }
 const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
-const SCORE_VERSION = 2;
+const SCORE_VERSION = 4;
 const MAX_POINTS = 110;
 
 async function moveIdentity(oldId, newId, profile) {
@@ -122,6 +122,39 @@ async function canonicalizeIdentity(profile) {
   return moveIdentity(profile.id, id, profile);
 }
 
+function scoreForClaim(claim) {
+  const o = claim.objectives;
+  if (!o || claim.version >= 3) return +claim.points || 0;
+  const pass = o.pullRequests > 0 && o.mergedPullRequests > 0;
+  return 10 + (o.commits > 0 ? 20 : 0) + (o.pullRequests > 0 ? 40 : 0)
+    + (o.mergedPullRequests > 0 ? 10 : 0) + (o.issues > 0 ? 30 : 0)
+    + (pass ? (o.authoredPullRequests > 0 ? 20 : 0) + (o.actionsRuns > 0 ? 10 : 0)
+      + (o.branches > 1 ? 10 : 0) : 0);
+}
+
+async function highestRepoScore(playerId) {
+  let cursor = "0", highest = { points: 0, scoreAt: 0 };
+  do {
+    const [next, keys] = await redis("SCAN", cursor, "MATCH", "claim:*", "COUNT", 100);
+    cursor = String(next);
+    for (let i = 0; i < keys.length; i += 50) {
+      const batch = keys.slice(i, i + 50);
+      const [records] = await pipe([["MGET", ...batch]]);
+      for (const raw of records) {
+        if (!raw) continue;
+        const claim = JSON.parse(raw);
+        if (claim.playerId !== playerId) continue;
+        const points = scoreForClaim(claim);
+        const scoreAt = claim.scoreAt || claim.at || 0;
+        if (points > highest.points || (points === highest.points && scoreAt < highest.scoreAt)) {
+          highest = { points, scoreAt };
+        }
+      }
+    }
+  } while (cursor !== "0");
+  return highest;
+}
+
 async function inspect(owner, name, handle) {
   const r = await gh(`/repos/${owner}/${name}`);
   if (r.status === 404) return null;
@@ -138,19 +171,20 @@ async function inspect(owner, name, handle) {
 function grade(d, handle) {
   const must = [
     [true, "Repository exists  +10", (d.info.fork ? "public · fork" : "public") + " · ★" + d.info.stargazers_count],
-    [d.prs > 0, "Has pull requests  +40 each", `${plural(d.prs, "PR")} · +${d.prs * 40} pts`],
-    [d.merged > 0, "Has merged PRs (merge requests)  +10 each", `${d.merged} merged · +${d.merged * 10} pts`]
+    [d.prs > 0, "Has pull requests  +40 points", `${plural(d.prs, "PR")} · +40 pts`],
+    [d.merged > 0, "Has merged PRs (merge requests)  +10 points", `${d.merged} merged · +10 pts`]
   ];
   const extra = [
-    [d.commits > 0, "Commits  +20 each", `${plural(d.commits, "commit")} · +${d.commits * 20} pts`],
+    [d.commits > 0, "Commits  +20 points", `${plural(d.commits, "commit")} · +20 pts`],
     [d.branches > 1, "Extra branches  +10", String(d.branches)],
-    [d.issues > 0, "Issues opened  +30 each", `${plural(d.issues, "issue")} · +${d.issues * 30} pts`],
+    [d.issues > 0, "Issues opened  +30 points", `${plural(d.issues, "issue")} · +30 pts`],
     [d.runs > 0, "GitHub Actions runs  +10", String(d.runs)]
   ];
-  if (handle) extra.unshift([d.mine > 0, "PRs by @" + handle + "  +20", String(d.mine)]);
+  if (handle) extra.unshift([d.mine > 0, "PRs by @" + handle + "  +20 points", String(d.mine)]);
   const pass = must.every(m => m[0]);
   const bonus = pass ? (handle && d.mine > 0 ? 20 : 0) + (d.runs > 0 ? 10 : 0) + (d.branches > 1 ? 10 : 0) : 0;
-  const points = 10 + d.commits * 20 + d.prs * 40 + d.merged * 10 + d.issues * 30 + bonus;
+  const points = 10 + (d.commits > 0 ? 20 : 0) + (d.prs > 0 ? 40 : 0)
+    + (d.merged > 0 ? 10 : 0) + (d.issues > 0 ? 30 : 0) + bonus;
   return { must, extra, pass, points };
 }
 
@@ -248,28 +282,29 @@ async function handle(req, res) {
     }
     if (req.method === "POST" && url === "/api/verify") {
       const m = String((await readBody(req)).repo || "").trim().replace(/\.git$/i, "").replace(/\/+$/, "")
-        .match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i);
+        .match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([\w.-]+)\/([\w.-]+)$/i);
       if (!m) return send(res, 400, { error: "Paste a link like github.com/owner/repo." });
+      const [, owner, name] = m;
+      if (!me.github || owner.toLowerCase() !== me.github.toLowerCase())
+        return send(res, 400, { error: `Enter a repository owned by your GitHub username (@${me.github || "unknown"}).` });
       if (!(await redis("SET", "cooldown:" + me.id, "1", "NX", "EX", 8)))
         return send(res, 429, { error: "Slow down. Wait a few seconds between checks." });
-      const [, owner, name] = m, key = "claim:" + (owner + "/" + name).toLowerCase();
+      const key = "claim:" + (owner + "/" + name).toLowerCase();
       const raw = await redis("GET", key), claim = raw ? JSON.parse(raw) : null;
       if (claim && claim.playerId !== me.id) return send(res, 409, { error: "That repo is already registered to another participant." });
       const d = await inspect(owner, name, me.github);
       if (!d) return send(res, 404, { error: "Repo not found. Check the link and make sure it is public." });
       const g = grade(d, me.github);
-      const prev = claim ? claim.points : 0;
       const [score] = await pipe([["ZSCORE", "lb", me.id]]);
       const current = Math.min(MAX_POINTS, +score || 0);
-      const priorAwarded = claim?.version === SCORE_VERSION ? claim.awardedPoints : Math.min(prev, current);
-      const delta = g.points - prev;
-      const awarded = delta > 0 ? Math.min(delta, MAX_POINTS - current) : 0;
-      const total = Math.min(MAX_POINTS, current + awarded);
       const at = Date.now();
+      const repoPoints = claim?.version === SCORE_VERSION ? Math.max(claim.points, g.points) : g.points;
+      const repoScoreAt = claim?.version === SCORE_VERSION && repoPoints === claim.points
+        ? claim.scoreAt || claim.at || at : at;
       const rec = JSON.stringify({
         playerId: me.id,
-        points: Math.max(prev, g.points),
-        awardedPoints: priorAwarded + awarded,
+        points: repoPoints,
+        scoreAt: repoScoreAt,
         objectives: {
           repository: true,
           pullRequests: d.prs,
@@ -289,10 +324,12 @@ async function handle(req, res) {
       } else {
         await redis("SET", key, rec);
       }
+      const best = await highestRepoScore(me.id);
+      const total = Math.min(MAX_POINTS, best.points);
+      const awarded = Math.max(0, total - current);
       await redis("ZADD", "lb", total, me.id);
-      if (awarded > 0) {
-        const scoreAt = Date.now();
-        await redis("SET", "player:" + me.id, JSON.stringify({ ...me, scoreAt }));
+      if (total !== current) {
+        await redis("SET", "player:" + me.id, JSON.stringify({ ...me, scoreAt: best.scoreAt || at }));
       }
       return send(res, 200, { ...g, awarded, repo: owner + "/" + name, total });
     }
