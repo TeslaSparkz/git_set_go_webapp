@@ -1,5 +1,5 @@
 import { createSignal, createMemo, For, Show } from "solid-js";
-
+import pdf from "/Git-Set-Go-Cheat-Sheet.pdf"
 const I = (d, c, w) => ({ d, c: [].concat(c), w });   // description, command(s), optional warning
 const SECTIONS = [
   { n: "01", t: "CREATE", items: [
@@ -82,7 +82,7 @@ export default function CheatSheet() {
       <div class="sheet-bar">
         <div class="row"><label for="q">?</label>
           <input id="q" placeholder="search commands, e.g. branch, undo, push" autocomplete="off" spellcheck={false} value={query()} onInput={e => setQuery(e.target.value)} /></div>
-        <a class="dl" href="/Git-Set-Go-Cheat-Sheet.pdf" download="Git-Set-Go-Cheat-Sheet.pdf">↓ Download PDF</a>
+        <a class="dl" href={pdf} download="Git-Set-Go-Cheat-Sheet.pdf">↓ Download PDF</a>
       </div>
       <p class="hint">Tap any command to copy it. Green parts like &lt;branch&gt; are placeholders you replace.</p>
 
