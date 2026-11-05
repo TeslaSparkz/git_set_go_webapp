@@ -45,7 +45,7 @@ export default function Register() {
           {redisStatus() === "checking" ? "checking Redis…" : "git config --register"}
         </button>
       </div>
-      <p class="hint">Your GitHub username is required and identifies your leaderboard account. Earn +20 for PRs you authored.</p>
+      <p class="hint">Your GitHub username is required and must be unique (including capitalization); display names can be shared. Earn +20 for PRs you authored.</p>
       <p class={"hint " + (redisStatus() === "ready" ? "" : "err")} role="status">
         {redisStatus() === "ready" ? "Upstash Redis connected." : redisStatus() === "checking" ? "Checking Upstash Redis…" : "Upstash Redis is unavailable. Start the API server and check its Upstash configuration, then retry."}
       </p>

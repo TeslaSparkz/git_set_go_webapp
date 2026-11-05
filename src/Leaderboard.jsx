@@ -22,13 +22,9 @@ export default function Leaderboard() {
             <thead><tr><th>#</th><th>Participant</th><th>Repos</th><th>Points</th><th>Reached</th></tr></thead>
             <tbody>
               <For each={rows()}>{r => (
-                <tr class={(r.rank <= 3 ? "r" + r.rank : "") + (me() && (r.github && me().github
-                  ? r.github.toLowerCase() === me().github.toLowerCase()
-                  : r.name === me().name) ? " you" : "")}>
+                <tr class={(r.rank <= 3 ? "r" + r.rank : "") + (me() && r.github === me().github ? " you" : "")}>
                   <td class="n">{r.rank}</td>
-                  <td>{r.github ? "@" + r.github : r.name}<Show when={me() && (r.github && me().github
-                    ? r.github.toLowerCase() === me().github.toLowerCase()
-                    : r.name === me().name)}><span class="tag">you</span></Show></td>
+                  <td>{r.github ? "@" + r.github : r.name}<Show when={me() && r.github === me().github}><span class="tag">you</span></Show></td>
                   <td>{r.repos}</td><td class="pts">{r.points}</td><td class="reached">{reachedAt(r.reachedAt)}</td>
                 </tr>
               )}</For>

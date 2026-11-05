@@ -118,7 +118,7 @@ async function moveIdentity(oldId, newId, profile) {
 
 async function canonicalizeIdentity(profile) {
   if (!profile.github) return profile;
-  const id = profile.github.toLowerCase();
+  const id = profile.github;
   return moveIdentity(profile.id, id, profile);
 }
 
@@ -242,7 +242,7 @@ async function handle(req, res) {
         const p = JSON.parse(out[0][i] || "{}");
         return { name: p.name, github: p.github, points: pts[id], repos: +out[i + 1] || 0, reachedAt: p.scoreAt || p.created || 0, id };
       })
-        .filter(r => r.name && r.github && r.id === r.github.toLowerCase())
+        .filter(r => r.name && r.github && r.id === r.github)
         .sort((a, b) => b.points - a.points || a.reachedAt - b.reachedAt || a.id.localeCompare(b.id))
         .map(({ id, ...r }, i) => ({ rank: i + 1, ...r }));
       return send(res, 200, rows);
@@ -252,14 +252,12 @@ async function handle(req, res) {
       const n = String(name).trim().replace(/\s+/g, " "), g = String(github).trim().replace(/^@/, "");
       if (n.length < 2 || n.length > 30) return send(res, 400, { error: "Name must be 2 to 30 characters." });
       if (!/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "A valid GitHub username is required." });
-      const id = g.toLowerCase(), token = crypto.randomBytes(24).toString("hex");
-      if (!(await redis("SET", "name:" + n.toLowerCase(), id, "NX"))) return send(res, 409, { error: "That name is taken. Pick another." });
-      const existing = await redis("GET", "player:" + id);
-      const profile = existing ? JSON.parse(existing) : { id, name: n, github: g, created: Date.now() };
-      profile.name = n;
-      profile.github = g;
+      const id = g, token = crypto.randomBytes(24).toString("hex");
+      const profile = { id, name: n, github: g, created: Date.now() };
       const p = JSON.stringify(profile);
-      await pipe([["SET", "token:" + token, p], ["SET", "player:" + id, p], ["ZADD", "lb", "NX", 0, id]]);
+      if (!(await redis("SET", "player:" + id, p, "NX")))
+        return send(res, 409, { error: "That GitHub username is already registered. Use your own username." });
+      await pipe([["SET", "token:" + token, p], ["ZADD", "lb", "NX", 0, id]]);
       const [points, repos] = await pipe([["ZSCORE", "lb", id], ["HGET", "stats:" + id, "repos"]]);
       return send(res, 201, { token, name: profile.name, github: g, points: +points || 0, repos: +repos || 0 });
     }
@@ -268,6 +266,9 @@ async function handle(req, res) {
     if (req.method === "POST" && url === "/api/me/github") {
       const g = String((await readBody(req)).github || "").trim().replace(/^@/, "");
       if (!/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "That GitHub username looks invalid." });
+      const id = g;
+      if (id !== me.id && await redis("GET", "player:" + id))
+        return send(res, 409, { error: "That GitHub username is already registered to another participant." });
       me.github = g;
       await redis("SET", "token:" + me.token, JSON.stringify(me));
       await redis("SET", "player:" + me.id, JSON.stringify(me));
@@ -285,7 +286,7 @@ async function handle(req, res) {
         .match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([\w.-]+)\/([\w.-]+)$/i);
       if (!m) return send(res, 400, { error: "Paste a link like github.com/owner/repo." });
       const [, owner, name] = m;
-      if (!me.github || owner.toLowerCase() !== me.github.toLowerCase())
+      if (!me.github || owner !== me.github)
         return send(res, 400, { error: `Enter a repository owned by your GitHub username (@${me.github || "unknown"}).` });
       if (!(await redis("SET", "cooldown:" + me.id, "1", "NX", "EX", 8)))
         return send(res, 429, { error: "Slow down. Wait a few seconds between checks." });
