@@ -44,6 +44,63 @@ async function count(p) {
   return m ? +m[1] : (await r.json()).length;
 }
 const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+const SCORE_VERSION = 2;
+const MAX_POINTS = 110;
+
+async function moveIdentity(oldId, newId, profile) {
+  if (oldId === newId) return profile;
+  const [oldScore, newScore, oldRepos, newRepos, existing] = await pipe([
+    ["ZSCORE", "lb", oldId], ["ZSCORE", "lb", newId],
+    ["HGET", "stats:" + oldId, "repos"], ["HGET", "stats:" + newId, "repos"],
+    ["GET", "player:" + newId]
+  ]);
+  const canonical = existing ? JSON.parse(existing) : profile;
+  const mergedScore = Math.min(MAX_POINTS, (+oldScore || 0) + (+newScore || 0));
+  const mergedRepos = (+oldRepos || 0) + (+newRepos || 0);
+  let cursor = "0";
+  do {
+    const [next, keys] = await redis("SCAN", cursor, "MATCH", "claim:*", "COUNT", 100);
+    cursor = String(next);
+    const updates = [];
+    for (const key of keys) {
+      const raw = await redis("GET", key);
+      if (!raw) continue;
+      const claim = JSON.parse(raw);
+      if (claim.playerId === oldId) {
+        claim.playerId = newId;
+        updates.push(["SET", key, JSON.stringify(claim)]);
+      }
+    }
+    for (let i = 0; i < updates.length; i += 50) await pipe(updates.slice(i, i + 50));
+  } while (cursor !== "0");
+
+  const updated = {
+    ...canonical,
+    id: newId,
+    github: profile.github,
+    scoreAt: Math.min(
+      canonical.scoreAt || canonical.created || Date.now(),
+      profile.scoreAt || profile.created || Date.now()
+    )
+  };
+  await pipe([
+    ["ZADD", "lb", mergedScore, newId],
+    ["ZREM", "lb", oldId],
+    ["HSET", "stats:" + newId, "repos", mergedRepos],
+    ["DEL", "stats:" + oldId],
+    ["SET", "player:" + newId, JSON.stringify(updated)],
+    ["DEL", "player:" + oldId]
+  ]);
+  Object.assign(profile, updated);
+  if (profile.token) await redis("SET", "token:" + profile.token, JSON.stringify(profile));
+  return profile;
+}
+
+async function canonicalizeIdentity(profile) {
+  if (!profile.github) return profile;
+  const id = profile.github.toLowerCase();
+  return moveIdentity(profile.id, id, profile);
+}
 
 async function inspect(owner, name, handle) {
   const r = await gh(`/repos/${owner}/${name}`);
@@ -61,19 +118,19 @@ async function inspect(owner, name, handle) {
 function grade(d, handle) {
   const must = [
     [true, "Repository exists  +10", (d.info.fork ? "public · fork" : "public") + " · ★" + d.info.stargazers_count],
-    [d.prs > 0, "Has pull requests  +20", plural(d.prs, "PR")],
-    [d.merged > 0, "Has merged PRs (merge requests)  +30", d.merged + " merged"]
+    [d.prs > 0, "Has pull requests  +40 each", `${plural(d.prs, "PR")} · +${d.prs * 40} pts`],
+    [d.merged > 0, "Has merged PRs (merge requests)  +10 each", `${d.merged} merged · +${d.merged * 10} pts`]
   ];
   const extra = [
-    [d.commits > 0, "Commits", String(d.commits)],
+    [d.commits > 0, "Commits  +20 each", `${plural(d.commits, "commit")} · +${d.commits * 20} pts`],
     [d.branches > 1, "Extra branches  +10", String(d.branches)],
-    [d.issues > 0, "Issues opened  +10", String(d.issues)],
+    [d.issues > 0, "Issues opened  +30 each", `${plural(d.issues, "issue")} · +${d.issues * 30} pts`],
     [d.runs > 0, "GitHub Actions runs  +10", String(d.runs)]
   ];
   if (handle) extra.unshift([d.mine > 0, "PRs by @" + handle + "  +20", String(d.mine)]);
   const pass = must.every(m => m[0]);
-  const bonus = (handle && d.mine > 0 ? 20 : 0) + (d.runs > 0 ? 10 : 0) + (d.issues > 0 ? 10 : 0) + (d.branches > 1 ? 10 : 0);
-  const points = 10 + (d.prs > 0 ? 20 : 0) + (d.merged > 0 ? 30 : 0) + (pass ? bonus : 0);
+  const bonus = pass ? (handle && d.mine > 0 ? 20 : 0) + (d.runs > 0 ? 10 : 0) + (d.branches > 1 ? 10 : 0) : 0;
+  const points = 10 + d.commits * 20 + d.prs * 40 + d.merged * 10 + d.issues * 30 + bonus;
   return { must, extra, pass, points };
 }
 
@@ -81,7 +138,10 @@ async function auth(req) {
   const t = (req.headers.authorization || "").replace("Bearer ", "");
   if (!/^[a-f0-9]{48}$/.test(t)) return null;
   const v = await redis("GET", "token:" + t);
-  return v ? JSON.parse(v) : null;
+  if (!v) return null;
+  const profile = JSON.parse(v);
+  Object.defineProperty(profile, "token", { value: t });
+  return profile;
 }
 const send = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
 const readBody = req => new Promise((ok, no) => {
@@ -112,23 +172,44 @@ http.createServer(async (req, res) => {
       for (let i = 0; i < flat.length; i += 2) { ids.push(flat[i]); pts[flat[i]] = +flat[i + 1]; }
       if (!ids.length) return send(res, 200, []);
       const out = await pipe([["MGET", ...ids.map(i => "player:" + i)], ...ids.map(i => ["HGET", "stats:" + i, "repos"])]);
-      const rows = ids.map((id, i) => { const p = JSON.parse(out[0][i] || "{}"); return { name: p.name, points: pts[id], repos: +out[i + 1] || 0, t: p.created || 0 }; })
-        .filter(r => r.name).sort((a, b) => b.points - a.points || a.t - b.t).map(({ t, ...r }, i) => ({ rank: i + 1, ...r }));
+      const rows = ids.map((id, i) => {
+        const p = JSON.parse(out[0][i] || "{}");
+        return { name: p.name, github: p.github, points: pts[id], repos: +out[i + 1] || 0, reachedAt: p.scoreAt || p.created || 0, id };
+      })
+        .filter(r => r.name && r.github && r.id === r.github.toLowerCase())
+        .sort((a, b) => b.points - a.points || a.reachedAt - b.reachedAt || a.id.localeCompare(b.id))
+        .map(({ id, ...r }, i) => ({ rank: i + 1, ...r }));
       return send(res, 200, rows);
     }
     if (req.method === "POST" && url === "/api/register") {
       const { name = "", github = "" } = await readBody(req);
       const n = String(name).trim().replace(/\s+/g, " "), g = String(github).trim().replace(/^@/, "");
       if (n.length < 2 || n.length > 30) return send(res, 400, { error: "Name must be 2 to 30 characters." });
-      if (g && !/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "That GitHub username looks invalid." });
-      const id = crypto.randomUUID(), token = crypto.randomBytes(24).toString("hex");
+      if (!/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "A valid GitHub username is required." });
+      const id = g.toLowerCase(), token = crypto.randomBytes(24).toString("hex");
       if (!(await redis("SET", "name:" + n.toLowerCase(), id, "NX"))) return send(res, 409, { error: "That name is taken. Pick another." });
-      const p = JSON.stringify({ id, name: n, github: g, created: Date.now() });
+      const existing = await redis("GET", "player:" + id);
+      const profile = existing ? JSON.parse(existing) : { id, name: n, github: g, created: Date.now() };
+      profile.name = n;
+      profile.github = g;
+      const p = JSON.stringify(profile);
       await pipe([["SET", "token:" + token, p], ["SET", "player:" + id, p], ["ZADD", "lb", "NX", 0, id]]);
-      return send(res, 201, { token, name: n, github: g, points: 0, repos: 0 });
+      const [points, repos] = await pipe([["ZSCORE", "lb", id], ["HGET", "stats:" + id, "repos"]]);
+      return send(res, 201, { token, name: profile.name, github: g, points: +points || 0, repos: +repos || 0 });
     }
     const me = url.startsWith("/api/") ? await auth(req) : null;
     if (url.startsWith("/api/") && !me) return send(res, 401, { error: "Register first." });
+    if (req.method === "POST" && url === "/api/me/github") {
+      const g = String((await readBody(req)).github || "").trim().replace(/^@/, "");
+      if (!/^[A-Za-z0-9-]{1,39}$/.test(g)) return send(res, 400, { error: "That GitHub username looks invalid." });
+      me.github = g;
+      await redis("SET", "token:" + me.token, JSON.stringify(me));
+      await redis("SET", "player:" + me.id, JSON.stringify(me));
+      await canonicalizeIdentity(me);
+      const [points, repos] = await pipe([["ZSCORE", "lb", me.id], ["HGET", "stats:" + me.id, "repos"]]);
+      return send(res, 200, { name: me.name, github: me.github, points: +points || 0, repos: +repos || 0 });
+    }
+    await canonicalizeIdentity(me);
     if (req.method === "GET" && url === "/api/me") {
       const [pts, repos] = await pipe([["ZSCORE", "lb", me.id], ["HGET", "stats:" + me.id, "repos"]]);
       return send(res, 200, { name: me.name, github: me.github, points: +pts || 0, repos: +repos || 0 });
@@ -144,13 +225,24 @@ http.createServer(async (req, res) => {
       if (claim && claim.playerId !== me.id) return send(res, 409, { error: "That repo is already registered to another participant." });
       const d = await inspect(owner, name, me.github);
       if (!d) return send(res, 404, { error: "Repo not found. Check the link and make sure it is public." });
-      const g = grade(d, me.github), prev = claim ? claim.points : 0, awarded = Math.max(0, g.points - prev);
-      const rec = JSON.stringify({ playerId: me.id, points: Math.max(g.points, prev), at: Date.now() });
+      const g = grade(d, me.github);
+      const prev = claim ? claim.points : 0;
+      const [score] = await pipe([["ZSCORE", "lb", me.id]]);
+      const current = Math.min(MAX_POINTS, +score || 0);
+      const priorAwarded = claim?.version === SCORE_VERSION ? claim.awardedPoints : Math.min(prev, current);
+      const delta = g.points - prev;
+      const awarded = delta > 0 ? Math.min(delta, MAX_POINTS - current) : 0;
+      const total = Math.min(MAX_POINTS, current + awarded);
+      const rec = JSON.stringify({ playerId: me.id, points: g.points, awardedPoints: priorAwarded + awarded, version: SCORE_VERSION, at: Date.now() });
       if (!claim) {
         if (!(await redis("SET", key, rec, "NX"))) return send(res, 409, { error: "That repo is already registered to another participant." });
         await redis("HINCRBY", "stats:" + me.id, "repos", 1);
-      } else if (awarded) await redis("SET", key, rec);
-      const total = awarded ? +(await redis("ZINCRBY", "lb", awarded, me.id)) : +(await redis("ZSCORE", "lb", me.id)) || 0;
+      } else if (claim.version !== SCORE_VERSION || awarded) await redis("SET", key, rec);
+      await redis("ZADD", "lb", total, me.id);
+      if (awarded > 0) {
+        const scoreAt = Date.now();
+        await redis("SET", "player:" + me.id, JSON.stringify({ ...me, scoreAt }));
+      }
       return send(res, 200, { ...g, awarded, repo: owner + "/" + name, total });
     }
     send(res, 404, { error: "Not found" });

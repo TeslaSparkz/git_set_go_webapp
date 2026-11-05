@@ -79,6 +79,10 @@ export default function CheatSheet() {
 
   return (
     <div>
+      <div class="sheet-actions">
+        <a class="pdf-button" href="/GIT%20CHEAT%20SHEET%20GITSETGO.pdf" download="Git-Set-Go-Cheat-Sheet.pdf">Download PDF</a>
+        <span class="hint">Includes the cheat sheet and references.</span>
+      </div>
       <div class="row sheet-search"><label for="q">?</label>
         <input id="q" placeholder="search commands, e.g. branch, undo, push" autocomplete="off" spellcheck={false} value={query()} onInput={e => setQuery(e.target.value)} /></div>
       <p class="hint">Tap any command to copy it. Green parts like &lt;branch&gt; are placeholders you replace.</p>

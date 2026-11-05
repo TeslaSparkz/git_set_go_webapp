@@ -1,5 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
-import { api, me, clearToken, refreshMe } from "./api";
+import { api, me, setMe, clearToken, refreshMe } from "./api";
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -20,10 +20,19 @@ function Rows(props) {
 
 export default function Verify() {
   const [repo, setRepo] = createSignal("");
+  const [github, setGithub] = createSignal("");
+  const [githubError, setGithubError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [v, setV] = createSignal(null);      
   const [must, setMust] = createSignal([]);
   const [extra, setExtra] = createSignal([]);
+
+  async function linkGithub(e) {
+    e.preventDefault();
+    setGithubError("");
+    try { setMe(await api("/api/me/github", { github: github() })); }
+    catch (err) { setGithubError(err.message); }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -34,11 +43,15 @@ export default function Verify() {
       for (const m of r.must) { setMust(a => [...a, m]); await wait(120); }
       for (const m of r.extra) { setExtra(a => [...a, m]); await wait(120); }
       if (r.pass) {
-        setV({ cls: "pass", head: r.awarded ? `Verified · +${r.awarded} points` : "Verified",
-               sub: r.awarded ? `${r.repo} scored ${r.points}. You now have ${r.total} points.` : "Already counted. Add bonuses to score more." });
+        setV({ cls: "pass", head: r.awarded ? `Verified · ${r.awarded > 0 ? "+" : ""}${r.awarded} points` : "Verified",
+               sub: r.awarded
+                 ? `${r.repo} scored ${r.points}. You now have ${r.total} points.`
+                 : r.total >= 110
+                   ? `${r.repo} checked. Your GitHub username has reached the 110-point cap.`
+                   : "Already counted. Add bonuses to score more." });
       } else {
-        const missing = r.must.filter(m => !m[0]).map(m => m[1].replace(/\s+\+\d+$/, "").toLowerCase()).join(" and ");
-        setV({ cls: "fail", head: r.awarded ? `Partial · +${r.awarded} points` : "Not yet",
+        const missing = r.must.filter(m => !m[0]).map(m => m[1].replace(/\s+\+\d+(?: each)?$/, "").toLowerCase()).join(" and ");
+        setV({ cls: "fail", head: r.awarded ? `Partial · ${r.awarded > 0 ? "+" : ""}${r.awarded} points` : "Not yet",
                sub: `Still needs ${missing}. You have ${r.total} points. Fix it, then verify again.` });
       }
       refreshMe();
@@ -54,12 +67,21 @@ export default function Verify() {
         <span>{me().name}{me().github ? ` (@${me().github})` : ""} · <b>{me().points} pts</b> · {me().repos} {me().repos === 1 ? "repo" : "repos"}</span>
         <a role="button" tabindex="0" onClick={clearToken} onKeyDown={e => e.key === "Enter" && clearToken()}>Switch participant</a>
       </div>
+      <Show when={!me().github}>
+        <form class="github-link" onSubmit={linkGithub}>
+          <p class="hint">Add your GitHub username to appear on the leaderboard and combine points by username.</p>
+          <div class="row"><label for="link-gh">@</label>
+            <input id="link-gh" placeholder="github username" autocomplete="off" spellcheck={false} required value={github()} onInput={e => setGithub(e.target.value)} /></div>
+          <button type="submit">link GitHub username</button>
+          <p class="hint err">{githubError()}</p>
+        </form>
+      </Show>
       <form onSubmit={submit}>
         <div class="row"><label for="repo">$</label>
           <input id="repo" placeholder="github.com/owner/repo" autocomplete="off" spellcheck={false} required value={repo()} onInput={e => setRepo(e.target.value)} /></div>
         <button type="submit" disabled={busy()}>git verify --repo</button>
       </form>
-      <p class="hint">10 points if the repo exists, 20 for pull requests, 30 for a merged PR. Once all three are met, up to +50 in bonuses.</p>
+      <p class="hint">Per repo: +10 for the repo, +20 per commit, +40 per PR, +10 per merged PR, and +30 per issue. Authored PRs, Actions, and extra branches can add bonuses. The total is capped at 110 points per GitHub username across all repos.</p>
 
       <div id="out" aria-live="polite">
         <Show when={v()}>
@@ -68,7 +90,7 @@ export default function Verify() {
           </div>
         </Show>
         <Show when={must().length}><Rows title="REQUIRED" items={must()} /></Show>
-        <Show when={extra().length}><Rows title="BONUS" items={extra()} bonus /></Show>
+        <Show when={extra().length}><Rows title="COMMITS, ISSUES & BONUSES" items={extra()} bonus /></Show>
       </div>
     </div>
   );

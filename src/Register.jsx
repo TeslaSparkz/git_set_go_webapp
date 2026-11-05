@@ -15,15 +15,15 @@ export default function Register() {
   }
 
   return (
-    <form onSubmit={submit}>
+    <form class="register-form" onSubmit={submit}>
       <div class="row"><label for="name">$</label>
         <input id="name" placeholder="your name" maxlength="30" autocomplete="off" required value={name()} onInput={e => setName(e.target.value)} /></div>
       <div class="pair">
         <div class="row"><label for="gh">@</label>
-          <input id="gh" placeholder="github username (optional)" autocomplete="off" spellcheck={false} value={gh()} onInput={e => setGh(e.target.value)} /></div>
+          <input id="gh" placeholder="github username" autocomplete="off" spellcheck={false} required value={gh()} onInput={e => setGh(e.target.value)} /></div>
         <button type="submit">git config --register</button>
       </div>
-      <p class="hint">Add your GitHub username to earn +20 for PRs you authored. Your name appears on the leaderboard.</p>
+      <p class="hint">Your GitHub username is required and identifies your leaderboard account. Earn +20 for PRs you authored.</p>
       <p class="hint err">{err()}</p>
     </form>
   );

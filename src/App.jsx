@@ -17,6 +17,17 @@ function Graph() {
   );
 }
 
+function Hero() {
+  return (
+    <section class="hero">
+      <p class="cmd"><b>$</b> git checkout -b <span>git-set-go</span></p>
+      <h1>Git, Set,<br /><em>Go!</em><span class="cursor" aria-hidden="true" /></h1>
+      <p class="sub">Register, verify your repo, earn points, climb the board.</p>
+      <Graph />
+    </section>
+  );
+}
+
 // To use real logos: put gdg-logo.png / foss-logo.png in /public and swap each <span> for
 // <img src="/gdg-logo.png" alt="Google Developer Groups logo" />
 function Orgs() {
@@ -46,22 +57,26 @@ export default function App() {
           <span class="t">foss × gdg — bash</span><span class="pill">REPO VERIFIER</span>
         </div>
         <div class="body">
-          <p class="cmd"><b>$</b> git checkout -b <span>git-set-go</span></p>
-          <h1>Git, Set,<br /><em>Go!</em><span class="cursor" aria-hidden="true" /></h1>
-          <p class="sub">Register, verify your repo, earn points, climb the board.</p>
-          <Graph />
-
-          <div class="tabs" role="tablist">
+          <nav class="tabs" role="tablist" aria-label="Main navigation">
             <button role="tab" aria-selected={tab() === "play"} onClick={() => setTab("play")}>Verify</button>
             <button role="tab" aria-selected={tab() === "lb"} onClick={() => setTab("lb")}>Leaderboard</button>
             <button role="tab" aria-selected={tab() === "sheet"} onClick={() => setTab("sheet")}>Cheat sheet</button>
-          </div>
+          </nav>
 
-          <div hidden={tab() !== "play"}>
-            <Show when={me()} fallback={<Register />}><Verify /></Show>
-          </div>
-          <Show when={tab() === "lb"}><Leaderboard /></Show>
-          <Show when={tab() === "sheet"}><CheatSheet /></Show>
+          <Show when={tab() === "play"} fallback={
+            <>
+              <Hero />
+              <Show when={tab() === "lb"}><Leaderboard /></Show>
+              <Show when={tab() === "sheet"}><CheatSheet /></Show>
+            </>
+          }>
+            <div class="verify-layout">
+              <Hero />
+              <section class="verify-panel">
+                <Show when={me()} fallback={<Register />}><Verify /></Show>
+              </section>
+            </div>
+          </Show>
 
           <p class="foot">$ git push origin main --be-there</p>
         </div>
